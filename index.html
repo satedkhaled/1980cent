@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -227,12 +228,12 @@ input::placeholder{color:rgba(255,255,255,.3);}
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
 <script>
   const _fbApp = firebase.initializeApp({
-    apiKey: "AIzaSyAaERjbUSKqb_oTgce7TiH6PyGsG08QoTM",
-    authDomain: "center-kitchen.firebaseapp.com",
-    projectId: "center-kitchen",
-    storageBucket: "center-kitchen.firebasestorage.app",
-    messagingSenderId: "426328007122",
-    appId: "1:426328007122:web:2099092821b20f11a9e80b"
+    apiKey: "AIzaSyDIUQh1AidLpl7JptFFox585WOpXkSQ_bY",
+    authDomain: "cent-fbada.firebaseapp.com",
+    projectId: "cent-fbada",
+    storageBucket: "cent-fbada.firebasestorage.app",
+    messagingSenderId: "336873744535",
+    appId: "1:336873744535:web:34ad8fa6d7d764e69be1d2"
   });
   window._db = firebase.firestore();
   window._storage = firebase.storage();
@@ -1316,10 +1317,15 @@ var orderHistory  = JSON.parse(localStorage.getItem('ci3_history')  || 'null') |
 var deletedOrderIds = JSON.parse(localStorage.getItem('ci3_deleted_ids') || '[]');
 var deletedItemIds  = JSON.parse(localStorage.getItem('ci3_deleted_item_ids') || '[]');
 // أصناف محظورة نهائياً من الكود نفسه (مايرجعوش حتى لو الجهاز اتصفر/تثبيت جديد)
-var PERMANENTLY_BANNED_ITEM_NAMES = ['صدور فراخ بانكو','شنيتزل 140 جرام'];
+var PERMANENTLY_BANNED_ITEM_NAMES = [];
 var deletedItemNames = (function(){
   var saved = JSON.parse(localStorage.getItem('ci3_deleted_item_names') || '[]');
   PERMANENTLY_BANNED_ITEM_NAMES.forEach(function(n){ if(saved.indexOf(n)===-1) saved.push(n); });
+  // ✅ إجبارياً شيل شنيتزل وفرسه بانكو من المحذوفات عند كل تحميل
+  ['شنيتزل','فرسه بانكو'].forEach(function(n){
+    var idx = saved.indexOf(n);
+    if(idx !== -1) saved.splice(idx, 1);
+  });
   return saved;
 })();
 localStorage.setItem('ci3_deleted_item_names', JSON.stringify(deletedItemNames));
@@ -1401,33 +1407,20 @@ function save(){
 }
 
 // ══ FIREBASE SHARED STORAGE ══
+// ✅ كل طلبية بتتكتب في document مستقل — مستحيل طلبية تمسح التانية
 async function saveSharedHistory(){
   try{
     var db = window._db;
     if(!db){ console.log('db not ready'); return false; }
     if(window._setLocalWrite) window._setLocalWrite(true);
-    // ✅ اكتب على Firebase فوراً بدون ما تستنى read — أسرع بكتير
-    await db.collection('cold_storage').doc('orders').set({ list: orderHistory, deleted: deletedOrderIds });
-    console.log('✅ saved to firebase', orderHistory.length);
-    // ✅ بعد الحفظ، ادمج في الخلفية عشان تجيب طلبيات أجهزة تانية
-    db.collection('cold_storage').doc('orders').get().then(function(snap){
-      if(!snap.exists) return;
-      var data = snap.data();
-      var fbList = Array.isArray(data.list) ? data.list : [];
-      var fbDeleted = Array.isArray(data.deleted) ? data.deleted : [];
-      var changed = false;
-      fbDeleted.forEach(function(id){ if(deletedOrderIds.indexOf(id)===-1){ deletedOrderIds.push(id); changed=true; } });
-      var localMap = {};
-      orderHistory.forEach(function(o){ localMap[o.id] = true; });
-      fbList.forEach(function(o){
-        if(!localMap[o.id] && deletedOrderIds.indexOf(o.id)===-1){ orderHistory.push(o); changed=true; }
-      });
-      orderHistory = orderHistory.filter(function(o){ return deletedOrderIds.indexOf(o.id)===-1; });
-      orderHistory.sort(function(a,b){ return new Date(b.date) - new Date(a.date); });
-      localStorage.setItem('ci3_history', JSON.stringify(orderHistory));
-      localStorage.setItem('ci3_deleted_ids', JSON.stringify(deletedOrderIds));
-      if(changed) renderHist();
-    }).catch(function(){});
+    // اكتب كل طلبية في document لوحدها بـ id فريد
+    var batch = db.batch();
+    orderHistory.forEach(function(o){
+      var ref = db.collection('orders').doc(String(o.id));
+      batch.set(ref, o);
+    });
+    await batch.commit();
+    console.log('✅ saved to firebase (per-doc)', orderHistory.length);
     return true;
   }catch(e){ console.log('firebase save error',e); return false; }
 }
@@ -1495,39 +1488,85 @@ async function loadBranchesFromFirebase(){
   }catch(e){ console.log('firebase branches load error',e); }
 }
 
+// ══ MIGRATION: ننقل الطلبيات من البنية القديمة (doc واحد) للجديدة (collection) ══
+// بيشتغل مرة واحدة بس على أول جهاز يفتح v10، وبعدين كل الأجهزة بتاخد البيانات عن طريق الـ sync العادي
+async function _migrateOrdersIfNeeded(){
+  try{
+    var db = window._db;
+    if(!db) return;
+    // لو الـ migration اتعمل قبل كده على الجهاز ده، اخرج فوراً
+    if(localStorage.getItem('ci3_migration_v10_done') === '1') return;
+
+    // شوف الـ collection الجديدة فيها حاجة
+    var newSnap = await db.collection('orders').limit(1).get();
+    if(!newSnap.empty){
+      // الـ collection الجديدة فيها بيانات — الـ migration اتعمل من جهاز تاني
+      localStorage.setItem('ci3_migration_v10_done', '1');
+      return;
+    }
+
+    // الـ collection فاضية — ننقل من البنية القديمة
+    console.log('🔄 Migration v10: بدأ نقل الطلبيات...');
+    var oldSnap = await db.collection('cold_storage').doc('orders').get();
+    var oldList = [];
+    if(oldSnap.exists){
+      var d = oldSnap.data();
+      oldList = Array.isArray(d.list) ? d.list : [];
+    }
+    // ادمج مع اللي في localStorage عشان منضيعش أي حاجة
+    var localMap = {};
+    oldList.forEach(function(o){ localMap[o.id] = true; });
+    if(Array.isArray(orderHistory)){
+      orderHistory.forEach(function(o){ if(!localMap[o.id]){ oldList.push(o); localMap[o.id]=true; } });
+    }
+
+    if(oldList.length === 0){
+      localStorage.setItem('ci3_migration_v10_done', '1');
+      return;
+    }
+
+    // ارفع كل طلبية في doc مستقل — batch كل 400 عشان Firestore limit
+    var BATCH_SIZE = 400;
+    for(var i = 0; i < oldList.length; i += BATCH_SIZE){
+      var batch = db.batch();
+      oldList.slice(i, i + BATCH_SIZE).forEach(function(o){
+        batch.set(db.collection('orders').doc(String(o.id)), o);
+      });
+      await batch.commit();
+    }
+    console.log('✅ Migration v10: تم نقل ' + oldList.length + ' طلبية');
+    localStorage.setItem('ci3_migration_v10_done', '1');
+  }catch(e){
+    console.log('⚠️ Migration v10 error (هيتجاهل ويكمل عادي):', e);
+    // لو الـ migration فشل، مش هنحط الـ flag — هيجرب مرة تانية في الفتح الجاي
+  }
+}
+
 async function loadSharedHistory(){
   try{
     var db = window._db;
     if(!db) return;
-    var snap = await db.collection('cold_storage').doc('orders').get();
-    if(snap.exists){
-      var data = snap.data();
-      var shared = Array.isArray(data.list) ? data.list : [];
-      var fbDeleted = Array.isArray(data.deleted) ? data.deleted : [];
-      // دمج قائمة المحذوفات (محلي + Firebase)
-      fbDeleted.forEach(function(id){ if(deletedOrderIds.indexOf(id)===-1) deletedOrderIds.push(id); });
-      localStorage.setItem('ci3_deleted_ids', JSON.stringify(deletedOrderIds));
-      if(!Array.isArray(orderHistory)) orderHistory = [];
-      // إزالة أي طلبية محذوفة من القائمة المحلية
-      orderHistory = orderHistory.filter(function(o){ return deletedOrderIds.indexOf(o.id)===-1; });
-      var localMap = {};
-      orderHistory.forEach(function(o){ localMap[o.id] = true; });
-      var changed = false;
-      shared.forEach(function(o){
-        if(!localMap[o.id] && deletedOrderIds.indexOf(o.id)===-1){ orderHistory.push(o); changed = true; }
-      });
-      // لو فيه طلبيات محلية مش على Firebase نرفعها
-      var sharedMap = {};
-      shared.forEach(function(o){ sharedMap[o.id] = true; });
-      var hasLocal = orderHistory.some(function(o){ return !sharedMap[o.id]; });
-      orderHistory.sort(function(a,b){ return new Date(b.date) - new Date(a.date); });
-      localStorage.setItem('ci3_history', JSON.stringify(orderHistory));
-      if(changed || hasLocal){
-        db.collection('cold_storage').doc('orders').set({ list: orderHistory, deleted: deletedOrderIds });
-      }
-      updateStats();
-      renderHist();
-    }
+    // ✅ اقرأ كل الطلبيات من collection مستقلة — كل doc = طلبية واحدة
+    var snap = await db.collection('orders').get();
+    var shared = [];
+    snap.forEach(function(doc){ shared.push(doc.data()); });
+    if(!Array.isArray(orderHistory)) orderHistory = [];
+    // إزالة أي طلبية محذوفة من القائمة المحلية
+    orderHistory = orderHistory.filter(function(o){ return deletedOrderIds.indexOf(o.id)===-1; });
+    var localMap = {};
+    orderHistory.forEach(function(o){ localMap[o.id] = true; });
+    var changed = false;
+    shared.forEach(function(o){
+      if(!localMap[o.id] && deletedOrderIds.indexOf(o.id)===-1){ orderHistory.push(o); changed = true; }
+    });
+    // لو فيه طلبيات محلية مش على Firebase نرفعها
+    var sharedMap = {};
+    shared.forEach(function(o){ sharedMap[o.id] = true; });
+    var hasLocal = orderHistory.some(function(o){ return !sharedMap[o.id]; });
+    orderHistory.sort(function(a,b){ return new Date(b.date) - new Date(a.date); });
+    localStorage.setItem('ci3_history', JSON.stringify(orderHistory));
+    if(hasLocal){ saveSharedHistory(); }
+    if(changed){ updateStats(); renderHist(); }
   }catch(e){ console.log('firebase load error',e); }
 }
 
@@ -1540,8 +1579,13 @@ async function saveInventoryToFirebase(){
     var db = window._db;
     if(!db) return;
     if(window._setLocalWrite) window._setLocalWrite(true);
-    await db.collection('cold_storage').doc('inventory').set({ list: items, deleted: deletedItemIds, deletedNames: deletedItemNames });
-    console.log('✅ inventory saved to firebase', items.length, 'deleted:', deletedItemIds.length);
+    // ✅ حماية إضافية: مهما كانت حالة الجهاز المحلي (نسخة قديمة متخزّنة...إلخ)،
+    // ممنوع يترفع أي صنف محذوف أو محظور نهائياً على قاعدة البيانات المشتركة
+    var cleanItems = items.filter(function(it){
+      return deletedItemIds.indexOf(it.id)===-1 && deletedItemNames.indexOf(it.name)===-1;
+    });
+    await db.collection('cold_storage').doc('inventory').set({ list: cleanItems, deleted: deletedItemIds, deletedNames: deletedItemNames });
+    console.log('✅ inventory saved to firebase', cleanItems.length, 'deleted:', deletedItemIds.length);
   }catch(e){ console.log('firebase inventory save error',e); }
 }
 
@@ -1561,10 +1605,14 @@ async function loadInventoryFromFirebase(){
     localStorage.setItem('ci3_deleted_item_ids', JSON.stringify(deletedItemIds));
     var fbDeletedNames = Array.isArray(data.deletedNames) ? data.deletedNames : [];
     fbDeletedNames.forEach(function(nm){ if(deletedItemNames.indexOf(nm)===-1) deletedItemNames.push(nm); });
+    // ✅ إجبارياً شيل شنيتزل وفرسه بانكو حتى لو جم من Firebase
+    ['شنيتزل','فرسه بانكو'].forEach(function(n){ var i=deletedItemNames.indexOf(n); if(i!==-1) deletedItemNames.splice(i,1); });
     localStorage.setItem('ci3_deleted_item_names', JSON.stringify(deletedItemNames));
 
     // ✅ شيل الأصناف المحذوفة من Firebase list قبل أي حاجة (بالـ ID وبالاسم)
     fbItems = fbItems.filter(function(fi){ return deletedItemIds.indexOf(fi.id)===-1 && deletedItemNames.indexOf(fi.name)===-1; });
+    // ✅ شيل الأصناف الممنوعة نهائياً حتى لو جاية من Firebase
+    fbItems = fbItems.filter(function(fi){ return PERMANENTLY_BANNED_ITEM_NAMES.indexOf(fi.name) === -1; });
 
     // ✅ أضف أي صنف من Firebase للـ CATALOG بس لو مش محذوف
     var _catalogNames = {};
@@ -2560,7 +2608,8 @@ function _doOpenEditOrder(id){
     order.items = _editItems;
     if(window._setLocalWrite) window._setLocalWrite(true);
     localStorage.setItem('ci3_history', JSON.stringify(orderHistory));
-    if(window._db) window._db.collection('cold_storage').doc('orders').set({ list: orderHistory, deleted: deletedOrderIds });
+    // ✅ حدّث doc الطلبية المعدّلة بس
+    if(window._db) window._db.collection('orders').doc(String(order.id)).set(order);
     ov.remove();
     renderHist();
     toast('✅ تم حفظ التعديل');
@@ -2666,7 +2715,8 @@ function checkPw(){
       localStorage.setItem('ci3_history', JSON.stringify(orderHistory));
       deletedOrderIds.push(delId);
       localStorage.setItem('ci3_deleted_ids', JSON.stringify(deletedOrderIds));
-      if(window._db) window._db.collection('cold_storage').doc('orders').set({ list: orderHistory, deleted: deletedOrderIds });
+      // ✅ احذف الطلبية من collection مستقلة بدل إعادة كتابة الكل
+      if(window._db) window._db.collection('orders').doc(String(delId)).delete();
       renderHist(); updateStats(); toast('🗑️ تم حذف الطلبية');
     }
     else if(pendingEditOrderId !== null){
@@ -2869,7 +2919,7 @@ function renderLabelRatioList(){
   var typeColors = {'تبريد':'#00c9ff','تجميد':'#90d4ff','room temp':'#ffc107'};
   var typeIcons  = {'تبريد':'❄️','تجميد':'🧊','room temp':'🌡️'};
   var html = sorted.map(function(it){
-    var legacyDefaults = {'أرز ابيض بورشن':5,'باستا اسباجتى بورشن':5,'باستا بنا بورشن':5,'باستا تاليتيلى بورشن':5,'باستا ريجاتونى بورشن':5,'ماشد بوتيتو':5,'بطاطس بورشن 360 جم':100,'جمبرى مرينيتد 10ق':10,'شيدر احمر 40 جم':10,'شيدر مكس 30 جم':10,'شيدر مكس 70 جم':10,'شيدر ابيض 30 جم':10,'بيف كساديا':10,'سالمون سموكد 70 جم':10,'سالمون سموكد 50 جم':10,'استربس 120جم':10,'صدور فراخ 120 جم':10,'كساديا 150 جم':10,'بسطرمه 25':10,'جمبري بريدينج':5,'لحم برجر 200 جم':5,'تشكن بريتزل':5,'برزاولا 25':5,'بيف تندر لوين 180 جم':6,'سماش برجر':2,'عيش برجر':4,'جرين جودز':0.5,'بيكوديجالو':0.5,'بستو ريحان':0.5,'صوص كارمليزد اونيون':0.5,'توابل بطاطس':0.5,'بصل كرمليز':0.5,'بصل كرمليز برجر':0.5,'دوكسيل ترافل':0.5,'عين جمل كرمليز':0.5,'مايو بنجر':0.5,'شنيتزل 140 جرام':0.5,'جارلك مايو':0.5,'بيبر صوص':0.5,'مشروم صوص':0.5,'صوص مشروم برجر':0.5,'هوت هني':0.5,'هانى مسترد':0.5,'كريمى تشيز صن دراى':0.5,'كريمى تشيز بومنتو':0.5,'كريمى تشيز بستو':0.5,'كريمي تشيز كيوليه':0.5,'معجون زيتون':0.5,'فلفل احمر روستد':0.5,'فلفل اصفر روستد':0.5,'بازل اويل':0.25};
+    var legacyDefaults = {'أرز ابيض بورشن':5,'باستا اسباجتى بورشن':5,'باستا بنا بورشن':5,'باستا تاليتيلى بورشن':5,'باستا ريجاتونى بورشن':5,'ماشد بوتيتو':5,'بطاطس بورشن 360 جم':100,'جمبرى مرينيتد 10ق':10,'شيدر احمر 40 جم':10,'شيدر مكس 30 جم':10,'شيدر مكس 70 جم':10,'شيدر ابيض 30 جم':10,'بيف كساديا':10,'سالمون سموكد 70 جم':10,'سالمون سموكد 50 جم':10,'استربس 120جم':10,'صدور فراخ 120 جم':10,'كساديا 150 جم':10,'بسطرمه 25':10,'جمبري بريدينج':5,'لحم برجر 200 جم':5,'تشكن بريتزل':5,'برزاولا 25':5,'بيف تندر لوين 180 جم':6,'سماش برجر':2,'عيش برجر':4,'جرين جودز':0.5,'بيكوديجالو':0.5,'بستو ريحان':0.5,'صوص كارمليزد اونيون':0.5,'توابل بطاطس':0.5,'بصل كرمليز':0.5,'بصل كرمليز برجر':0.5,'دوكسيل ترافل':0.5,'عين جمل كرمليز':0.5,'مايو بنجر':0.5,'شنيتزل':0.5,'جارلك مايو':0.5,'بيبر صوص':0.5,'مشروم صوص':0.5,'صوص مشروم برجر':0.5,'هوت هني':0.5,'هانى مسترد':0.5,'كريمى تشيز صن دراى':0.5,'كريمى تشيز بومنتو':0.5,'كريمى تشيز بستو':0.5,'كريمي تشيز كيوليه':0.5,'معجون زيتون':0.5,'فلفل احمر روستد':0.5,'فلفل اصفر روستد':0.5,'بازل اويل':0.25};
     var cur = _labelRatios[it.name] !== undefined ? _labelRatios[it.name] : (legacyDefaults[it.name] || 1);
     var col = typeColors[it.type] || '#b3d9f5';
     var ico = typeIcons[it.type] || '📦';
@@ -3240,7 +3290,7 @@ function showLabelsOverlay(h){
       var bulkItems6 = ['بيف تندر لوين 180 جم'];
       var bulkItems2 = ['سماش برجر'];
       var bulkItems4 = ['عيش برجر'];
-      var bulk500gItems = ['جرين جودز','بيكوديجالو','بستو ريحان','صوص كارمليزد اونيون','توابل بطاطس','بصل كرمليز','بصل كرمليز برجر','دوكسيل ترافل','عين جمل كرمليز','مايو بنجر','شنيتزل 140 جرام','جارلك مايو','بيبر صوص','مشروم صوص','صوص مشروم برجر','هوت هني','هانى مسترد','كريمى تشيز صن دراى','كريمى تشيز بومنتو','كريمى تشيز بستو','كريمي تشيز كيوليه','معجون زيتون','فلفل احمر روستد','فلفل اصفر روستد'];
+      var bulk500gItems = ['جرين جودز','بيكوديجالو','بستو ريحان','صوص كارمليزد اونيون','توابل بطاطس','بصل كرمليز','بصل كرمليز برجر','دوكسيل ترافل','عين جمل كرمليز','مايو بنجر','شنيتزل','جارلك مايو','بيبر صوص','مشروم صوص','صوص مشروم برجر','هوت هني','هانى مسترد','كريمى تشيز صن دراى','كريمى تشيز بومنتو','كريمى تشيز بستو','كريمي تشيز كيوليه','معجون زيتون','فلفل احمر روستد','فلفل اصفر روستد'];
       var isBulk = bulkItems.indexOf(item.name) !== -1;
       var isBulk100 = bulkItems100.indexOf(item.name) !== -1;
       var isBulk10 = bulkItems10.indexOf(item.name) !== -1;
@@ -3703,6 +3753,7 @@ var ITEMS_PER_IMAGE = 9999; // كل الأصناف في صورة واحدة
 function _buildOrderCardHTML(h, itemsChunk, pageNum, totalPages){
   var dt = new Date(h.date);
   var ds = _safeFmt(h.date,{year:'numeric',month:'2-digit',day:'2-digit'});
+  var ts = _safeFmt(h.date,'time');
 
   // عمودين: نقسم الأصناف نصفين - عمود يمين وعمود شمال
   var half = Math.ceil(itemsChunk.length / 2);
@@ -3763,6 +3814,7 @@ function _buildOrderCardHTML(h, itemsChunk, pageNum, totalPages){
         '<div style="text-align:right;">'+
           '<div style="font-size:13px;font-weight:700;color:rgba(255,255,255,.75);">تاريخ</div>'+
           '<div style="font-size:20px;font-weight:900;color:#fff;">'+ds+'</div>'+
+          '<div style="font-size:14px;font-weight:700;color:#00c9ff;margin-top:2px;">🕐 '+ts+'</div>'+
           pageLabel+
         '</div>'+
         '<div style="text-align:center;">'+
@@ -5279,12 +5331,20 @@ var CATALOG=[
   {name:'مشروم صوص',type:'تبريد',unit:'لتر',shelfLife:3},
   {name:'صوص مشروم برجر',type:'تبريد',unit:'لتر',shelfLife:3},
   {name:'بيبر صوص',type:'تبريد',unit:'لتر',shelfLife:3},
+  {name:'شنيتزل',type:'تجميد',unit:'بورشن',shelfLife:7},
+  {name:'فرسه بانكو',type:'تجميد',unit:'بورشن',shelfLife:7},
 ];
 // ✅ فلترة CATALOG من أي item محذوف عند كل تحميل للصفحة (حل دائم)
 (function(){
   for(var _bi = CATALOG.length - 1; _bi >= 0; _bi--){
     if(deletedItemNames.indexOf(CATALOG[_bi].name) !== -1) CATALOG.splice(_bi, 1);
+    // ✅ PERMANENTLY_BANNED يشتغل دايماً حتى لو localStorage اتمسح
+    else if(PERMANENTLY_BANNED_ITEM_NAMES.indexOf(CATALOG[_bi].name) !== -1) CATALOG.splice(_bi, 1);
   }
+  // ✅ شيل من items كمان لو رجعوا من Firebase أو localStorage قديم
+  items = items.filter(function(it){
+    return PERMANENTLY_BANNED_ITEM_NAMES.indexOf(it.name) === -1;
+  });
 })();
 
 // ══ INIT ══
@@ -5329,13 +5389,16 @@ if(items.length<20){
 })();
 renderInv();updateStats();renderBranches();loadLabelRatios();
 // 🚀 تحميل البيانات من Firebase بشكل متوازي (parallel) عشان تكون أسرع
-Promise.all([
-  loadSharedHistory(),
-  loadBranchesFromFirebase(),
-  loadInventoryFromFirebase(),
-  _loadBItemsFirebase(),
-  loadMfgFromFirebase()
-]).catch(function(err){ console.log('⚠️ Firebase load error:', err); });
+// ✅ Migration أولاً عشان ننقل الطلبيات القديمة للبنية الجديدة قبل الـ load
+_migrateOrdersIfNeeded().then(function(){
+  return Promise.all([
+    loadSharedHistory(),
+    loadBranchesFromFirebase(),
+    loadInventoryFromFirebase(),
+    _loadBItemsFirebase(),
+    loadMfgFromFirebase()
+  ]);
+}).catch(function(err){ console.log('⚠️ Firebase load error:', err); });
 // ══ PERMANENT NOURTH PURGE ══
 (async function purgeNourthForever(){
   try{
@@ -5458,12 +5521,26 @@ setInterval(checkDeviceBlock, 30000);
     var _localWrite = false; // flag عشان نمنع loop لما احنا اللي بنكتب
 
     // ── Orders ──
-    db.collection('cold_storage').doc('orders').onSnapshot(function(snap){
-      if(!snap.exists || _localWrite) return;
-      var data = snap.data();
-      if(data.list){ orderHistory = data.list; localStorage.setItem('ci3_history', JSON.stringify(orderHistory)); }
-      if(data.deleted){ deletedOrderIds = data.deleted; localStorage.setItem('ci3_deleted_ids', JSON.stringify(deletedOrderIds)); }
-      renderHist();
+    db.collection('orders').onSnapshot(function(snap){
+      if(_localWrite) return;
+      var changed = false;
+      snap.docChanges().forEach(function(change){
+        var o = change.doc.data();
+        if(change.type === 'added' || change.type === 'modified'){
+          if(deletedOrderIds.indexOf(o.id) !== -1) return;
+          var idx = orderHistory.findIndex(function(x){ return x.id === o.id; });
+          if(idx === -1){ orderHistory.push(o); changed = true; }
+          else { orderHistory[idx] = o; changed = true; }
+        } else if(change.type === 'removed'){
+          orderHistory = orderHistory.filter(function(x){ return x.id !== o.id; });
+          changed = true;
+        }
+      });
+      if(changed){
+        orderHistory.sort(function(a,b){ return new Date(b.date) - new Date(a.date); });
+        localStorage.setItem('ci3_history', JSON.stringify(orderHistory));
+        renderHist();
+      }
     });
 
     // ── Inventory (items + shelf life) ──
@@ -5476,6 +5553,8 @@ setInterval(checkDeviceBlock, 30000);
       }
       if(data.deletedNames){
         data.deletedNames.forEach(function(nm){ if(deletedItemNames.indexOf(nm)===-1) deletedItemNames.push(nm); });
+        // ✅ إجبارياً شيل شنيتزل وفرسه بانكو حتى لو جم من Firebase
+        ['شنيتزل','فرسه بانكو'].forEach(function(n){ var i=deletedItemNames.indexOf(n); if(i!==-1) deletedItemNames.splice(i,1); });
         localStorage.setItem('ci3_deleted_item_names', JSON.stringify(deletedItemNames));
       }
       if(data.list){
@@ -5702,7 +5781,74 @@ autoFillBranch();
 </script>
 
 <script>
-console.log('Service Worker disabled for debugging');;
+if('serviceWorker' in navigator){
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('./service-worker.js').then(function(reg){
+      console.log('SW registered ✅');
+    }).catch(function(err){
+      console.log('SW error:', err);
+    });
+  });
+}
+
+// QR viewer moved to qr.html
+
+// ══ RATING SYSTEM ══
+(function addRatingUI(){
+  // Overlay HTML
+  var ol = document.createElement('div');
+  ol.id = 'ratingOverlay';
+  ol.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center;padding:20px;';
+  ol.innerHTML = `
+    <div style="background:#0d2d44;border-radius:20px;padding:24px;width:100%;max-width:380px;text-align:center;font-family:Cairo,sans-serif;">
+      <div style="font-size:28px;margin-bottom:8px;">⭐</div>
+      <div style="font-size:17px;font-weight:700;color:#fff;margin-bottom:4px;">عندك طلبية النهارده لسه متقيمتش</div>
+      <div style="font-size:13px;color:rgba(255,255,255,.5);margin-bottom:20px;">قيّمها دلوقتي ⭐</div>
+      <div id="ratingOrderInfo" style="background:rgba(0,201,255,.08);border-radius:12px;padding:12px;margin-bottom:20px;font-size:13px;color:#00c9ff;font-weight:700;"></div>
+      <div style="margin-bottom:18px;">
+        <div style="font-size:13px;color:rgba(255,255,255,.7);margin-bottom:10px;font-weight:600;">الجودة كويسة؟</div>
+        <div style="display:flex;gap:12px;justify-content:center;">
+          <button onclick="setRating('quality',1)" id="rq1" style="flex:1;padding:12px;border-radius:12px;border:2px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);font-size:22px;cursor:pointer;">👍</button>
+          <button onclick="setRating('quality',0)" id="rq0" style="flex:1;padding:12px;border-radius:12px;border:2px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);font-size:22px;cursor:pointer;">👎</button>
+        </div>
+      </div>
+      <div style="margin-bottom:18px;">
+        <div style="font-size:13px;color:rgba(255,255,255,.7);margin-bottom:10px;font-weight:600;">الكمية صح؟</div>
+        <div style="display:flex;gap:12px;justify-content:center;">
+          <button onclick="setRating('qty',1)" id="rqty1" style="flex:1;padding:12px;border-radius:12px;border:2px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);font-size:22px;cursor:pointer;">👍</button>
+          <button onclick="setRating('qty',0)" id="rqty0" style="flex:1;padding:12px;border-radius:12px;border:2px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);font-size:22px;cursor:pointer;">👎</button>
+        </div>
+      </div>
+      <div style="margin-bottom:24px;">
+        <div style="font-size:13px;color:rgba(255,255,255,.7);margin-bottom:10px;font-weight:600;">وصلت في الوقت؟</div>
+        <div style="display:flex;gap:12px;justify-content:center;">
+          <button onclick="setRating('time',1)" id="rt1" style="flex:1;padding:12px;border-radius:12px;border:2px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);font-size:22px;cursor:pointer;">👍</button>
+          <button onclick="setRating('time',0)" id="rt0" style="flex:1;padding:12px;border-radius:12px;border:2px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);font-size:22px;cursor:pointer;">👎</button>
+        </div>
+      </div>
+      <button onclick="submitRating()" id="ratingSubmitBtn" style="width:100%;padding:14px;border-radius:14px;background:linear-gradient(135deg,#00c9ff,#0077b6);border:none;color:#fff;font-family:Cairo,sans-serif;font-size:15px;font-weight:700;cursor:pointer;opacity:.4;pointer-events:none;">حفظ التقييم</button>
+      <button onclick="closeRating()" style="width:100%;padding:10px;border-radius:14px;background:transparent;border:none;color:rgba(255,255,255,.3);font-family:Cairo,sans-serif;font-size:13px;cursor:pointer;margin-top:8px;">بعدين</button>
+    </div>`;
+  document.body.appendChild(ol);
+
+  var currentRatingId = null;
+  var ratingData = {};
+
+  window.setRating = function(field, val){
+    ratingData[field] = val;
+    // تلوين الزرار المختار
+    var pairs = {quality:['rq1','rq0'], qty:['rqty1','rqty0'], time:['rt1','rt0']};
+    var ids = pairs[field];
+    document.getElementById(ids[0]).style.background = val===1 ? 'rgba(0,200,100,.3)' : 'rgba(255,255,255,.05)';
+    document.getElementById(ids[0]).style.borderColor = val===1 ? '#00c864' : 'rgba(255,255,255,.1)';
+    document.getElementById(ids[1]).style.background = val===0 ? 'rgba(220,53,69,.3)' : 'rgba(255,255,255,.05)';
+    document.getElementById(ids[1]).style.borderColor = val===0 ? '#dc3545' : 'rgba(255,255,255,.1)';
+    // لو الـ 3 اتختاروا، فعّل زرار الحفظ
+    if('quality' in ratingData && 'qty' in ratingData && 'time' in ratingData){
+      var btn = document.getElementById('ratingSubmitBtn');
+      btn.style.opacity = '1'; btn.style.pointerEvents = 'auto';
+    }
+  };
 
   window.submitRating = function(){
     if(!currentRatingId) return;
@@ -5710,7 +5856,8 @@ console.log('Service Worker disabled for debugging');;
     if(order){
       order.rating = ratingData;
       localStorage.setItem('ci3_history', JSON.stringify(orderHistory));
-      if(window._db) window._db.collection('cold_storage').doc('orders').set({ list: orderHistory, deleted: deletedOrderIds });
+      // ✅ حدّث doc الطلبية المحددة بس
+      if(window._db) window._db.collection('orders').doc(String(order.id)).set(order);
       renderHist();
       toast('✅ تم حفظ التقييم');
     }
@@ -7016,8 +7163,9 @@ function reportGenerate(){
 
   var db = window._db;
   if(db){
-    db.collection('cold_storage').doc('orders').get().then(function(snap){
-      var orders = (snap.exists && Array.isArray(snap.data().list)) ? snap.data().list : [];
+    db.collection('orders').get().then(function(snap){
+      var orders = [];
+      snap.forEach(function(doc){ orders.push(doc.data()); });
       orderHistory.forEach(function(o){ if(!orders.find(function(x){return x.id===o.id;})) orders.push(o); });
       processOrders(orders);
     }).catch(function(){ processOrders(orderHistory); });
@@ -7100,8 +7248,9 @@ function dailyAllBranchesGenerate(){
 
   var db = window._db;
   if(db){
-    db.collection('cold_storage').doc('orders').get().then(function(snap){
-      var orders = (snap.exists && Array.isArray(snap.data().list)) ? snap.data().list : [];
+    db.collection('orders').get().then(function(snap){
+      var orders = [];
+      snap.forEach(function(doc){ orders.push(doc.data()); });
       orderHistory.forEach(function(o){ if(!orders.find(function(x){return x.id===o.id;})) orders.push(o); });
       processOrders(orders);
     }).catch(function(){ processOrders(orderHistory); });
@@ -7230,8 +7379,9 @@ function bsummaryGetData(dateStr){
 
     var db = window._db;
     if(db){
-      db.collection('cold_storage').doc('orders').get().then(function(snap){
-        var orders = (snap.exists && Array.isArray(snap.data().list)) ? snap.data().list : [];
+      db.collection('orders').get().then(function(snap){
+        var orders = [];
+        snap.forEach(function(doc){ orders.push(doc.data()); });
         // دمج مع اللوكال
         var localMap = {};
         orders.forEach(function(o){ localMap[o.id]=true; });
@@ -8201,7 +8351,7 @@ function closeDashLock(){
 function checkDashPw(){
   var inp = document.getElementById('dashPwInput');
   var pw = inp ? inp.value.trim() : '';
-  if(pw !== ADMIN_PW){
+  if(pw !== '7632420'){
     var err = document.getElementById('dashPwErr');
     if(err) err.textContent = '❌ باسورد غير صحيح';
     if(inp){ inp.value=''; inp.focus(); }
@@ -8348,7 +8498,7 @@ function closeMgrJardLock(){
 function checkMgrJardPw(){
   var inp = document.getElementById('mgrJardPwInput');
   var pw = inp ? inp.value.trim() : '';
-  if(pw !== '1980'){
+  if(pw !== '7632420'){
     var err = document.getElementById('mgrJardPwErr');
     if(err) err.textContent = '❌ باسورد غير صحيح';
     if(inp){ inp.value=''; inp.focus(); }
