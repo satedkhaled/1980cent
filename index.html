@@ -10177,8 +10177,7 @@ async function lblAnalyze(){
   document.getElementById('lblPrintWrap').style.display = 'none';
 
   // Groq (مجاني وسريع جداً - 14,400 طلب يومياً بدون فيزا)
-  var GROQ_API_KEY = 'ضع_مفتاحك_هنا'; // ⚠️ حط مفتاح Groq الجديد بتاعك هنا بعد ما تعمل Revoke للقديم
-
+var GROQ_API_KEY = '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';
   var PROMPT = 'You are reading a handwritten/printed kitchen order sheet. Read EVERY row of the order top to bottom, one at a time — do not skip any row even if it looks similar to another or the handwriting is unclear. Do not merge two rows into one, and do not invent rows that are not on the sheet. For each row, double-check the quantity number carefully (distinguish 1 vs 7, 0 vs 6, and decimal points) before writing it. If a quantity is genuinely illegible, still include the item with qty 1 rather than dropping it. Output ONLY a raw JSON object with zero extra text — no greetings, no explanation, no markdown, no code fences. JSON format: {"items":[{"name":"item name in Arabic exactly as written","qty":1,"unit":"بورشن"}]}. Valid units: بورشن، لتر، كيلو، قالب، جرام. Start your response with { and end with }.';
 
   try{
