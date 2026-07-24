@@ -1,98 +1,88 @@
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Central Kitchen 1980</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #000;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-family: Cairo, sans-serif;
-    }
-    #status {
-      text-align: center;
-      color: #00c9ff;
-      font-size: 16px;
-      font-weight: 700;
-      padding: 20px;
-    }
-    #status .icon { font-size: 48px; margin-bottom: 14px; }
-    #status .err { color: #ff6b6b; font-size: 14px; margin-top: 8px; }
-    #viewer img {
-      max-width: 100vw;
-      max-height: 100vh;
-      object-fit: contain;
-      display: block;
-    }
-    #footer {
-      position: fixed;
-      bottom: 0; left: 0; right: 0;
-      background: rgba(0,0,0,.75);
-      padding: 8px;
-      text-align: center;
-      color: rgba(255,255,255,.4);
-      font-size: 11px;
-      font-family: Cairo, sans-serif;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>صورة المنتج</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0a1f30;
+    font-family: Cairo, Tahoma, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #wrap {
+    width: 100%; max-width: 520px; padding: 16px;
+    text-align: center;
+  }
+  #img {
+    width: 100%; border-radius: 16px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.5);
+    display: none;
+    background: #fff;
+  }
+  #state {
+    color: #b3d9f5; font-size: 15px; font-weight: 700;
+    padding: 40px 10px;
+  }
+  #state.error { color: #ff8080; }
+</style>
 </head>
 <body>
-
-<div id="status">
-  <div class="icon">⏳</div>
-  <div>جاري تحميل الصورة...</div>
+<div id="wrap">
+  <div id="state">⏳ بنحمّل الصورة...</div>
+  <img id="img" alt="صورة المنتج">
 </div>
-<div id="viewer" style="display:none;"></div>
-<div id="footer">Central Kitchen 1980</div>
 
-<!-- Firebase -->
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
-
 <script>
   firebase.initializeApp({
-    apiKey: "AIzaSyDIUQh1AidLpl7JptFFox585WOpXkSQ_bY",
-    authDomain: "cent-fbada.firebaseapp.com",
-    projectId: "cent-fbada",
-    storageBucket: "cent-fbada.firebasestorage.app",
-    messagingSenderId: "336873744535",
-    appId: "1:336873744535:web:34ad8fa6d7d764e69be1d2"
+    apiKey: "AIzaSyCwy7C7pvIzxBV6aHDVkmL3X712RsxTjJU",
+    authDomain: "cent-bec0a.firebaseapp.com",
+    projectId: "cent-bec0a",
+    storageBucket: "cent-bec0a.firebasestorage.app",
+    messagingSenderId: "154245229914",
+    appId: "1:154245229914:web:4cab3ee490b18cf9959763"
   });
   var db = firebase.firestore();
+  // بعض شبكات الإنترنت/الموبايل في مصر بتحجب نوع الاتصال الافتراضي بتاع Firestore
+  // فبيرجع "client is offline" حتى لو النت شغال. الحل: نجبره يستخدم long-polling.
+  db.settings({ experimentalAutoDetectLongPolling: true, merge: true });
 
-  var params = new URLSearchParams(location.search);
-  var qrId = params.get('id');
+  var params = new URLSearchParams(window.location.search);
+  var id = params.get('id');
+  var stateEl = document.getElementById('state');
+  var imgEl = document.getElementById('img');
 
-  var statusEl = document.getElementById('status');
-  var viewerEl = document.getElementById('viewer');
-
-  function showError(msg) {
-    statusEl.innerHTML =
-      '<div class="icon">❌</div>' +
-      '<div style="color:#ff6b6b;">' + msg + '</div>';
+  function loadPhoto(attempt){
+    db.collection('qr_photos').doc(id).get({ source: 'server' }).then(function(doc){
+      if(doc.exists && doc.data().img){
+        imgEl.src = doc.data().img;
+        imgEl.style.display = 'block';
+        stateEl.style.display = 'none';
+      } else {
+        stateEl.textContent = '⚠️ الصورة غير موجودة أو اتحذفت';
+        stateEl.className = 'error';
+      }
+    }).catch(function(err){
+      // أول فشل ممكن يكون بلبلة مؤقتة في الاتصال — نجرب تاني مرة واحدة قبل ما نستسلم
+      if(attempt < 2){
+        setTimeout(function(){ loadPhoto(attempt + 1); }, 1500);
+      } else {
+        stateEl.textContent = '⚠️ فشل تحميل الصورة، تأكد من الإنترنت';
+        stateEl.className = 'error';
+        console.log('qr view error', err);
+      }
+    });
   }
 
-  if (!qrId) {
-    showError('رابط غير صحيح — مفيش ID');
+  if(!id){
+    stateEl.textContent = '⚠️ رابط غير صحيح';
+    stateEl.className = 'error';
   } else {
-    db.collection('qr_photos').doc(qrId).get()
-      .then(function(snap) {
-        if (snap.exists && snap.data().img) {
-          viewerEl.innerHTML = '<img src="' + snap.data().img + '" alt="product">';
-          viewerEl.style.display = 'block';
-          statusEl.style.display = 'none';
-        } else {
-          showError('الصورة مش موجودة أو اتمسحت');
-        }
-      })
-      .catch(function(err) {
-        showError('مشكلة في تحميل الصورة<br><span class="err">' + (err.message || '') + '</span>');
-      });
+    loadPhoto(1);
   }
 </script>
 </body>

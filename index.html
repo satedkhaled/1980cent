@@ -235,6 +235,8 @@ input::placeholder{color:rgba(255,255,255,.3);}
     appId: "1:154245229914:web:4cab3ee490b18cf9959763"
   });
   window._db = firebase.firestore();
+  // نفس فيكس الـ offline بتاع qr.html — بعض شبكات النت بتحجب نوع الاتصال الافتراضي
+  window._db.settings({ experimentalAutoDetectLongPolling: true, merge: true });
   window._storage = firebase.storage();
   console.log('Firebase ready ✅');
 </script>
@@ -2451,19 +2453,7 @@ function chkRow(id){
   var val=parseFloat(inp.value)||0;
   if(val>0){ovr.textContent='';row.classList.add('lit');row.classList.remove('err');_oq[String(id)]=val;}
   else{ovr.textContent='';row.classList.remove('lit','err');delete _oq[String(id)];}
-  saveOrderDraftNow();
 }
-function saveOrderDraftNow(){
-  // احفظ المسودة فورًا مع كل تعديل (مش كل ثانيتين بس) — عشان لو حصل أي
-  // visibilitychange (قفل الموبايل/خروج للتطبيقات) يرجع أحدث رقم اتكتب مش رقم قديم
-  try{
-    if(_draftLocked) return;
-    var br=document.getElementById('oBranch');
-    localStorage.setItem('ci3_draft',JSON.stringify({q:_oq,u:orderUnits,br:br?br.value:'',ts:Date.now()}));
-  }catch(e){}
-}
-var ORDER_MERGE_WINDOW_MS = 25*60*1000; // لو كان فيه طلبية لنفس الفرع من نفس الجهاز خلال آخر 25 دقيقة، اعرض دمج بدل طلبية جديدة
-
 function submitOrder(){
   console.log('submitOrder CALLED');
   var branch=document.getElementById('oBranch').value;
@@ -2480,80 +2470,6 @@ function submitOrder(){
   });
   console.log('ordered items:', ordered.length);
   if(!ordered.length){ alert('⚠️ لم تحدد أي كمية'); return; }
-
-  // فيه طلبية قريبة (خلال آخر 25 دقيقة) لنفس الفرع من نفس الجهاز؟ اعرض خيار الدمج
-  var candidate = (Array.isArray(orderHistory) && orderHistory.length) ? orderHistory[0] : null;
-  if(candidate && candidate.branch===branch && candidate.deviceId===getDeviceId() && (Date.now()-candidate.id) < ORDER_MERGE_WINDOW_MS){
-    _showMergeOrderPrompt(candidate, ordered, branch, note);
-    return;
-  }
-  _finishNewOrder(ordered, branch, note);
-}
-
-function _showMergeOrderPrompt(candidate, ordered, branch, note){
-  var mins = Math.max(1, Math.round((Date.now()-candidate.id)/60000));
-  var old=document.getElementById('mergeOrderOverlay'); if(old) old.remove();
-  var ov=document.createElement('div');
-  ov.id='mergeOrderOverlay';
-  ov.style.cssText='position:fixed;inset:0;background:rgba(10,47,74,.97);z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;direction:rtl;font-family:Cairo,sans-serif;text-align:center;';
-  ov.innerHTML =
-    '<div style="font-size:40px;">🤔</div>'+
-    '<div style="font-size:16px;font-weight:800;color:#ffc107;">لسه بعت طلبية لفرع '+branch+' من '+mins+' دقيقة</div>'+
-    '<div style="font-size:13px;color:rgba(179,217,245,.75);max-width:320px;line-height:1.8;">تحب تضيف الأصناف دي على نفس الطلبية القديمة (تبقى طلبية واحدة بس بالسجل)، ولا تعمل طلبية جديدة منفصلة؟</div>'+
-    '<div style="display:flex;flex-direction:column;gap:10px;width:100%;max-width:320px;margin-top:8px;">'+
-      '<button id="mergeYesBtn" style="padding:14px;border-radius:30px;border:none;background:linear-gradient(135deg,#00c9ff,#0075c2);color:#fff;font-family:Cairo,sans-serif;font-size:15px;font-weight:700;cursor:pointer;">➕ ضيفها على الطلبية القديمة</button>'+
-      '<button id="mergeNoBtn" style="padding:14px;border-radius:30px;border:1px solid rgba(255,255,255,.2);background:none;color:rgba(255,255,255,.75);font-family:Cairo,sans-serif;font-size:14px;font-weight:700;cursor:pointer;">🆕 لا، طلبية جديدة منفصلة</button>'+
-    '</div>';
-  document.body.appendChild(ov);
-  document.getElementById('mergeYesBtn').addEventListener('click', function(){
-    ov.remove();
-    _mergeIntoOrder(candidate, ordered, note);
-  });
-  document.getElementById('mergeNoBtn').addEventListener('click', function(){
-    ov.remove();
-    _finishNewOrder(ordered, branch, note);
-  });
-}
-
-function _mergeIntoOrder(order, ordered, note){
-  ordered.forEach(function(o){
-    var it=items.find(function(i){return i.id===o.itemId;});
-    if(it){
-      it.used += o.qty;
-      if(it.qty > 0) it.qty = Math.max(0, it.qty - o.qty);
-      it.updatedAt = Date.now();
-    }
-  });
-  ordered.forEach(function(o){
-    var ex = order.items.find(function(i){ return i.itemId===o.itemId; });
-    if(ex){ ex.qty = (parseFloat(ex.qty)||0) + o.qty; }
-    else { order.items.push(o); }
-  });
-  if(note){ order.note = order.note ? (order.note+' | '+note) : note; }
-  order.date = localISOString(); // آخر تحديث للطلبية
-  ordered.forEach(function(o){
-    movementLog.unshift({ id: Date.now()+Math.random(), date: order.date, type: 'order',
-      itemId: o.itemId, itemName: o.name, itemType: o.type,
-      qty: o.qty, unit: o.unit, note: 'فرع: '+order.branch+' (إضافة لطلبية سابقة)' });
-  });
-  saveMovements();
-  if(window._setLocalWrite) window._setLocalWrite(true);
-  localStorage.setItem('ci3_history', JSON.stringify(orderHistory));
-  if(window._db) window._db.collection('orders').doc(String(order.id)).set(order);
-  lastOrder = order;
-  localStorage.setItem('ci3_lastOrder', JSON.stringify(lastOrder));
-  orderUnits={}; _oq={}; _draftLocked=true; setTimeout(function(){_draftLocked=false;},4000);
-  try{localStorage.removeItem('ci3_draft');}catch(e){}
-  renderOrder(true);
-  renderHist();
-  document.getElementById('oNote').value='';
-  document.getElementById('oBranch').value='';
-  toast('✅ اتضافت للطلبية اللي بعتها قبل كده');
-  showOrderDoneOverlay(order);
-  save().catch(function(){});
-}
-
-function _finishNewOrder(ordered, branch, note){
   ordered.forEach(function(o){
     var it=items.find(function(i){return i.id===o.itemId;});
     if(it){
@@ -5971,19 +5887,8 @@ setInterval(checkDeviceBlock, 30000);
         var raw = localStorage.getItem('ci3_butchery_log');
         var local = [];
         try{ local = JSON.parse(raw)||[]; }catch(e){}
-        // ادمج بدل ما نمسح المحلي بالكامل — عشان لو الحفظ عندك لسه بيتزامن مع
-        // السيرفر ووصلت نسخة قديمة من جهاز/مستخدم تاني، ميحصلش فقدان لأي جرد اتحفظ محليًا
-        var byId = {};
-        local.forEach(function(r){ byId[r.id] = r; });
-        remote.forEach(function(r){ byId[r.id] = byId[r.id] || r; });
-        var merged = Object.keys(byId).map(function(k){ return byId[k]; });
-        merged.sort(function(a,b){ return (b.id||0)-(a.id||0); });
-        var changed = merged.length !== local.length;
-        localStorage.setItem('ci3_butchery_log', JSON.stringify(merged));
-        if(changed && window._db){
-          // رجّع النسخة المدمجة (اللي فيها كل الجرد المحفوظ) للسيرفر عشان محدش يضيع
-          try{ window._db.collection('cold_storage').doc('butchery_log').set({ list: merged }); }catch(e){}
-        }
+        // butchery_log بيتعمله set كامل — خد الـ remote كـ source of truth
+        localStorage.setItem('ci3_butchery_log', JSON.stringify(remote));
         if(typeof renderButcheryLog==='function') renderButcheryLog();
       }
     });
@@ -6297,23 +6202,41 @@ function saveButcheryRecord(){
   var hasAny = rec.items.some(function(i){ return i.kg>0||i.po>0; });
   if(!hasAny) return toast('⚠️ أدخل كمية واحدة على الأقل');
 
-  var log = getButcheryLog();
-  log.unshift(rec);
-  localStorage.setItem('ci3_butchery_log', JSON.stringify(log));
-
-  // حفظ على Firebase
-  try{
-    if(typeof window._setLocalWrite === 'function') window._setLocalWrite(true);
-    var db = window._db;
-    if(db) db.collection('cold_storage').doc('butchery_log').set({ list: log });
-  }catch(e){}
-
-  // مسح الحقول
+  // مسح الحقول فورًا (استجابة سريعة للمستخدم)
   BUTCHERY_ITEMS.forEach(function(_, idx){
     var inp=document.getElementById('bq_'+idx); if(inp) inp.value='';
   });
 
-  renderButcheryLog();
+  function mergeAndPersist(remoteList){
+    var local = getButcheryLog();
+    var byId = {};
+    (remoteList||[]).forEach(function(r){ byId[r.id]=r; });
+    local.forEach(function(r){ byId[r.id]=r; });
+    byId[rec.id] = rec;
+    var merged = Object.keys(byId).map(function(k){ return byId[k]; });
+    merged.sort(function(a,b){ return (b.id||0)-(a.id||0); });
+    var cutoff = Date.now() - (30*24*60*60*1000);
+    merged = merged.filter(function(r){ return new Date(r.date).getTime() >= cutoff; });
+    localStorage.setItem('ci3_butchery_log', JSON.stringify(merged));
+    renderButcheryLog();
+    return merged;
+  }
+
+  var db = window._db;
+  if(db){
+    db.collection('cold_storage').doc('butchery_log').get().then(function(snap){
+      var remoteList = (snap.exists && snap.data().list) ? snap.data().list : [];
+      var merged = mergeAndPersist(remoteList);
+      if(window._setLocalWrite) window._setLocalWrite(true);
+      db.collection('cold_storage').doc('butchery_log').set({ list: merged });
+    }).catch(function(e){
+      console.log('butchery save merge error', e);
+      mergeAndPersist(getButcheryLog());
+    });
+  } else {
+    mergeAndPersist([]);
+  }
+
   toast('✅ تم حفظ الجرد');
 }
 
@@ -7129,9 +7052,7 @@ document.addEventListener('visibilitychange', function(){
       // لو صفحة الطلب مفتوحة، حدّث الـ inputs
       if(curPage==='order'){
         if(d.q){
-          var _focusedId = (document.activeElement && document.activeElement.id && document.activeElement.id.indexOf('oq_')===0) ? document.activeElement.id.slice(3) : null;
           Object.keys(d.q).forEach(function(id){
-            if(id===_focusedId) return; // متلمسش الخانة اللي المستخدم بيكتب فيها دلوقتي
             var inp=document.getElementById('oq_'+id);
             if(inp){ inp.value=d.q[id]; chkRow(parseInt(id)); }
           });
@@ -7851,13 +7772,35 @@ function getBdpLog(){
   catch(e){ return []; }
 }
 
-function saveBdpLog(log){
-  localStorage.setItem('ci3_bdp_log', JSON.stringify(log));
-  if(window._setLocalWrite) window._setLocalWrite(true);
-  try{
-    var db = window._db;
-    if(db) db.collection('cold_storage').doc('butchery_daily_prod').set({list:log});
-  }catch(e){}
+function saveBdpLog(newEntry){
+  function mergeAndPersist(remoteList){
+    var local = getBdpLog();
+    var byId = {};
+    (remoteList||[]).forEach(function(r){ byId[r.id]=r; });
+    local.forEach(function(r){ byId[r.id]=r; });
+    if(newEntry) byId[newEntry.id] = newEntry;
+    var merged = Object.keys(byId).map(function(k){ return byId[k]; });
+    merged.sort(function(a,b){ return (b.id||0)-(a.id||0); });
+    localStorage.setItem('ci3_bdp_log', JSON.stringify(merged));
+    return merged;
+  }
+  var db = window._db;
+  if(db){
+    db.collection('cold_storage').doc('butchery_daily_prod').get().then(function(snap){
+      var remoteList = (snap.exists && snap.data().list) ? snap.data().list : [];
+      var merged = mergeAndPersist(remoteList);
+      if(window._setLocalWrite) window._setLocalWrite(true);
+      db.collection('cold_storage').doc('butchery_daily_prod').set({list: merged});
+      if(typeof renderButcheryDailyProd==='function') renderButcheryDailyProd();
+    }).catch(function(e){
+      console.log('bdp save merge error', e);
+      mergeAndPersist(getBdpLog());
+      if(typeof renderButcheryDailyProd==='function') renderButcheryDailyProd();
+    });
+  } else {
+    mergeAndPersist(getBdpLog());
+    if(typeof renderButcheryDailyProd==='function') renderButcheryDailyProd();
+  }
 }
 
 function toggleButcheryDailyProd(){
@@ -7902,9 +7845,7 @@ function bdpAddEntry(){
     userName: p ? p.name : '—'
   };
 
-  var log = getBdpLog();
-  log.unshift(entry);
-  saveBdpLog(log);
+  saveBdpLog(entry);
 
   nameEl.value=''; qtyEl.value=''; bsEl.value='';
   bdpSetUnit('بورشن');
@@ -10238,7 +10179,7 @@ async function lblAnalyze(){
   // Groq (مجاني وسريع جداً - 14,400 طلب يومياً بدون فيزا)
   var GROQ_API_KEY = 'ضع_مفتاحك_هنا'; // ⚠️ حط مفتاح Groq الجديد بتاعك هنا بعد ما تعمل Revoke للقديم
 
-  var PROMPT = 'IMPORTANT: output ONLY a raw JSON object with zero extra text. No greetings, no explanation, no markdown. Extract all items and quantities from this order image. JSON format: {"items":[{"name":"item name in Arabic","qty":1,"unit":"بورشن"}]}. Valid units: بورشن، لتر، كيلو، قالب، جرام. Start your response with { and end with }.';
+  var PROMPT = 'You are reading a handwritten/printed kitchen order sheet. Read EVERY row of the order top to bottom, one at a time — do not skip any row even if it looks similar to another or the handwriting is unclear. Do not merge two rows into one, and do not invent rows that are not on the sheet. For each row, double-check the quantity number carefully (distinguish 1 vs 7, 0 vs 6, and decimal points) before writing it. If a quantity is genuinely illegible, still include the item with qty 1 rather than dropping it. Output ONLY a raw JSON object with zero extra text — no greetings, no explanation, no markdown, no code fences. JSON format: {"items":[{"name":"item name in Arabic exactly as written","qty":1,"unit":"بورشن"}]}. Valid units: بورشن، لتر، كيلو، قالب، جرام. Start your response with { and end with }.';
 
   try{
     var resp = await fetch(
@@ -10250,7 +10191,7 @@ async function lblAnalyze(){
           'Authorization': 'Bearer ' + GROQ_API_KEY
         },
         body: JSON.stringify({
-          model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+          model: 'qwen/qwen3.6-27b',
           messages: [{
             role: 'user',
             content: [
