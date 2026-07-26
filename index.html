@@ -4207,7 +4207,7 @@ function showPickingList(h){
   if(!h){ toast('مفيش طلبية'); return; }
   var dt = new Date(h.date);
   // التاريخ في الـ picking list = تاريخ الطلبية + 1 يوم (الطلبية بتجي اليوم وبتتجهز تاني يوم)
-  var dtDelivery = new Date(dt); dtDelivery.setDate(dtDelivery.getDate() + 1);
+  var dtDelivery = new Date(); dtDelivery.setDate(dtDelivery.getDate() + 1);
   var ds = _safeFmt(dtDelivery.toISOString(),{weekday:'long',year:'numeric',month:'long',day:'numeric'});
   var dateShort = isNaN(dtDelivery.getTime()) ? '—' : dtDelivery.toLocaleDateString('en-GB').replace(/\//g,'/');
 
@@ -4425,7 +4425,7 @@ function showPickingList(h){
 function _buildPickingListCardHTML(h){
   var dt = new Date(h.date);
   // التاريخ في الـ picking list = تاريخ الطلبية + 1 يوم
-  var dtDelivery = new Date(dt); dtDelivery.setDate(dtDelivery.getDate() + 1);
+  var dtDelivery = new Date(); dtDelivery.setDate(dtDelivery.getDate() + 1);
   var ds = _safeFmt(dtDelivery.toISOString(),{weekday:'long',year:'numeric',month:'long',day:'numeric'});
   var dateShort = isNaN(dtDelivery.getTime()) ? '—' : dtDelivery.toLocaleDateString('en-GB').replace(/\//g,'/');
   var totalItems = h.items.length;
